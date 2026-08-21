@@ -154,7 +154,8 @@ with st.sidebar:
         with st.spinner(f"Ingesting {uploaded.name}..."):
             try:
                 path = save_uploaded_pdf(uploaded)
-                asyncio.run(send_rag_ingest_event(path))
+                source_id = path.stem.replace("_", " ")
+                asyncio.run(send_rag_ingest_event(path, source_id))
                 st.session_state.documents.append(uploaded.name)
                 st.success(f"Added: {uploaded.name}")
             except Exception as e:

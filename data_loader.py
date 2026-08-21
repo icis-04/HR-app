@@ -10,7 +10,7 @@ client = Anthropic()
 mbd_client = voyageai.Client()
 
 EMBED_MODEL = "voyage-3-large"     # Voyage's flagship model, closest equivalent to text-embedding-3-large
-EMBED_DIMENSION = 2048
+EMBED_DIMENSION = 1024
 EMBED_DTYPE = "float"   
 
 # --- Chunking config ---

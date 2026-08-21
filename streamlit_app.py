@@ -1,22 +1,22 @@
 import asyncio
 import time
 from pathlib import Path
-
+ 
 import inngest
 import requests
 import streamlit as st
 from dotenv import load_dotenv
 import os
-
+ 
 load_dotenv()
-
+ 
 st.set_page_config(
     page_title="HR Assistant",
     page_icon="🧑‍💼",
     layout="centered",
     initial_sidebar_state="expanded",
 )
-
+ 
 # ---------------------------------------------------------------------------
 # Light styling — keeps it clean and HR-appropriate without heavy custom CSS
 # ---------------------------------------------------------------------------
@@ -46,30 +46,32 @@ st.markdown(
     """,
     unsafe_allow_html=True,
 )
-
-
+ 
+ 
 # ---------------------------------------------------------------------------
 # Client + config
 # ---------------------------------------------------------------------------
 @st.cache_resource
 def get_inngest_client() -> inngest.Inngest:
     return inngest.Inngest(app_id="rag_app", is_production=True)
-
-
+ 
+ 
 def inngest_api_base() -> str:
-    return os.getenv("INNGEST_API_BASE", "http://127.0.0.1:8288/v1")
-
-
+    # Production default is Inngest Cloud's real API. Only overridden if you
+    # explicitly set INNGEST_API_BASE (e.g. for local testing against the dev server).
+    return os.getenv("INNGEST_API_BASE", "https://api.inngest.com/v1")
+ 
+ 
 # ---------------------------------------------------------------------------
 # Session state
 # ---------------------------------------------------------------------------
 if "chat_history" not in st.session_state:
     st.session_state.chat_history = []  # list of {"role": "user"/"assistant", "content": str, "sources": list}
-
+ 
 if "documents" not in st.session_state:
     st.session_state.documents = []  # list of filenames ingested this session
-
-
+ 
+ 
 # ---------------------------------------------------------------------------
 # Backend calls
 # ---------------------------------------------------------------------------
@@ -79,8 +81,8 @@ def save_uploaded_pdf(file) -> Path:
     file_path = uploads_dir / file.name
     file_path.write_bytes(file.getbuffer())
     return file_path
-
-
+ 
+ 
 async def send_rag_ingest_event(pdf_path: Path) -> None:
     client = get_inngest_client()
     await client.send(
@@ -92,8 +94,8 @@ async def send_rag_ingest_event(pdf_path: Path) -> None:
             },
         )
     )
-
-
+ 
+ 
 async def send_rag_query_event(question: str, top_k: int) -> str:
     client = get_inngest_client()
     result = await client.send(
@@ -103,15 +105,21 @@ async def send_rag_query_event(question: str, top_k: int) -> str:
         )
     )
     return result[0]
-
-
+ 
+ 
 def fetch_runs(event_id: str) -> list[dict]:
     url = f"{inngest_api_base()}/events/{event_id}/runs"
-    resp = requests.get(url, timeout=10)
+ 
+    # Inngest Cloud's API requires the signing key as a Bearer token.
+    # Without this header, every request comes back 401 Unauthorized.
+    signing_key = os.environ["INNGEST_SIGNING_KEY"]
+    headers = {"Authorization": f"Bearer {signing_key}"}
+ 
+    resp = requests.get(url, headers=headers, timeout=10)
     resp.raise_for_status()
     return resp.json().get("data", [])
-
-
+ 
+ 
 def wait_for_run_output(event_id: str, timeout_s: float = 120.0, poll_interval_s: float = 0.5) -> dict:
     start = time.time()
     last_status = None
@@ -128,17 +136,17 @@ def wait_for_run_output(event_id: str, timeout_s: float = 120.0, poll_interval_s
         if time.time() - start > timeout_s:
             raise TimeoutError(f"Timed out waiting for a response (last status: {last_status}).")
         time.sleep(poll_interval_s)
-
-
+ 
+ 
 # ---------------------------------------------------------------------------
 # Sidebar — document upload + tracking
 # ---------------------------------------------------------------------------
 with st.sidebar:
     st.header("📄 HR Documents")
     st.caption("Upload CVs, policies, or onboarding guides for the assistant to reference.")
-
+ 
     uploaded = st.file_uploader("Upload a PDF", type=["pdf"], accept_multiple_files=False)
-
+ 
     if uploaded is not None and uploaded.name not in st.session_state.documents:
         with st.spinner(f"Ingesting {uploaded.name}..."):
             try:
@@ -148,36 +156,36 @@ with st.sidebar:
                 st.success(f"Added: {uploaded.name}")
             except Exception as e:
                 st.error(f"Couldn't ingest this file: {e}")
-
+ 
     st.divider()
-
+ 
     if st.session_state.documents:
         st.caption(f"{len(st.session_state.documents)} document(s) ingested this session")
         for doc in st.session_state.documents:
             st.markdown(f'<div class="doc-pill">✅ {doc}</div>', unsafe_allow_html=True)
     else:
         st.caption("No documents ingested yet.")
-
+ 
     st.divider()
-
+ 
     top_k = st.slider("Chunks to retrieve per question", min_value=1, max_value=20, value=5)
-
+ 
     if st.button("🗑️ Clear conversation", use_container_width=True):
         st.session_state.chat_history = []
         st.rerun()
-
+ 
     st.caption(
         "Note: this list only tracks documents uploaded in your current browser session — "
         "the assistant can still see anything ingested previously."
     )
-
-
+ 
+ 
 # ---------------------------------------------------------------------------
 # Main — chat interface
 # ---------------------------------------------------------------------------
 st.title("🧑‍💼 HR Assistant")
 st.caption("Ask about policies, onboarding, or candidate CVs. Answers are grounded only in uploaded documents.")
-
+ 
 for msg in st.session_state.chat_history:
     with st.chat_message(msg["role"]):
         st.write(msg["content"])
@@ -186,14 +194,14 @@ for msg in st.session_state.chat_history:
                 " ".join(f'<span class="source-pill">📎 {s}</span>' for s in msg["sources"]),
                 unsafe_allow_html=True,
             )
-
+ 
 question = st.chat_input("Ask a question about your HR documents...")
-
+ 
 if question:
     st.session_state.chat_history.append({"role": "user", "content": question, "sources": []})
     with st.chat_message("user"):
         st.write(question)
-
+ 
     with st.chat_message("assistant"):
         placeholder = st.empty()
         placeholder.markdown("_Thinking..._")
@@ -203,9 +211,9 @@ if question:
             answer = output.get("answer", "").strip()
             sources = output.get("sources", [])
             num_contexts = output.get("num_contexts", 0)
-
+ 
             placeholder.write(answer or "I wasn't able to generate an answer for that.")
-
+ 
             if sources:
                 st.markdown(
                     " ".join(f'<span class="source-pill">📎 {s}</span>' for s in sources),
@@ -215,19 +223,29 @@ if question:
                 st.caption(
                     "No matching content was found in the uploaded documents for this question."
                 )
-
+ 
             st.session_state.chat_history.append(
                 {"role": "assistant", "content": answer, "sources": sources}
             )
-
+ 
         except TimeoutError as e:
             placeholder.error(str(e))
         except RuntimeError as e:
             placeholder.error(str(e))
         except requests.exceptions.ConnectionError:
             placeholder.error(
-                "Couldn't reach the Inngest dev server. Make sure it's running "
-                "(`npx inngest-cli@latest dev`) and try again."
+                "Couldn't reach the Inngest API. Check your network connection and try again."
             )
         except Exception as e:
             placeholder.error(f"Something went wrong: {e}")
+ 
+
+
+
+
+
+
+
+
+
+
